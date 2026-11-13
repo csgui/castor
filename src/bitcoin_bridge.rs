@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::fs::File;
 use std::io;
@@ -20,6 +19,7 @@ use crate::blockfile::ProofFile;
 use crate::chaininterface::Blockchain;
 use crate::chainview;
 use crate::cli::CliArgs;
+use crate::env_var;
 use crate::get_chain_provider;
 use crate::header_index::HeaderIndex;
 use crate::init_logger;
@@ -188,8 +188,8 @@ fn start_p2p(
     block_notifier: std::sync::mpsc::Receiver<bitcoin::BlockHash>,
 ) -> anyhow::Result<()> {
     info!("Starting P2PV2-only BIP 183 proof server");
-    let p2p_host = env::var("P2P_HOST").unwrap_or_else(|_| "0.0.0.0".into());
-    let p2p_port = env::var("P2P_PORT").unwrap_or_else(|_| "8333".into());
+    let p2p_host = env_var("P2P_HOST").unwrap_or_else(|| "0.0.0.0".into());
+    let p2p_port = env_var("P2P_PORT").unwrap_or_else(|| "8333".into());
     let p2p_listen = format!("{p2p_host}:{p2p_port}");
     let p2p_address: SocketAddr = p2p_listen.parse().with_context(|| {
         format!("invalid P2P listen address {p2p_listen:?}; check P2P_HOST and P2P_PORT")

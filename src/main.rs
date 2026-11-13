@@ -43,8 +43,18 @@ fn main() -> anyhow::Result<()> {
     run_bridge()
 }
 
+/// Reads an environment variable, treating unset, empty, or whitespace-only
+/// values as absent.
+///
+/// `.env.sample` lists every variable with an empty value. Copying it to `.env`
+/// must fall back to the defaults instead of using empty strings as paths,
+/// URLs, ports, or credentials.
+fn env_var(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.trim().is_empty())
+}
+
 fn subdir(path: &str) -> String {
-    let dir = env::var("DATA_DIR").unwrap_or_else(|_| {
+    let dir = env_var("DATA_DIR").unwrap_or_else(|| {
         let dir = env::var("HOME").expect("No $HOME env var?");
         dir + "/.bridge"
     });
@@ -80,13 +90,13 @@ fn init_logger(log_file: Option<&str>, log_to_term: bool) -> anyhow::Result<()> 
 
 fn get_chain_provider() -> Result<Box<dyn Blockchain>> {
     #[cfg(feature = "esplora")]
-    if let Ok(esplora_url) = env::var("ESPLORA_URL") {
+    if let Some(esplora_url) = env_var("ESPLORA_URL") {
         return Ok(Box::new(esplora::EsploraBlockchain::new(esplora_url)));
     }
-    let rpc_url = env::var("BITCOIN_CORE_RPC_URL").unwrap_or_else(|_| "localhost:8332".into());
+    let rpc_url = env_var("BITCOIN_CORE_RPC_URL").unwrap_or_else(|| "localhost:8332".into());
     // try to use username and password auth first
-    if let Ok(username) = env::var("BITCOIN_CORE_RPC_USER") {
-        let password = env::var("BITCOIN_CORE_RPC_PASSWORD").map_err(|_| {
+    if let Some(username) = env_var("BITCOIN_CORE_RPC_USER") {
+        let password = env_var("BITCOIN_CORE_RPC_PASSWORD").ok_or_else(|| {
             anyhow::anyhow!("BITCOIN_CORE_RPC_PASSWORD must be set if BITCOIN_CORE_RPC_USER is set")
         })?;
         info!(
@@ -102,7 +112,7 @@ fn get_chain_provider() -> Result<Box<dyn Blockchain>> {
         }
     }
     // fallback to cookie auth. This is the default for core, but discouraged for security reasons
-    let cookie = env::var("BITCOIN_CORE_COOKIE_FILE").unwrap_or_else(|_| {
+    let cookie = env_var("BITCOIN_CORE_COOKIE_FILE").unwrap_or_else(|| {
         env::var("HOME")
             .map(|home| format!("{}/.bitcoin/.cookie", home))
             .expect("Failed to find $HOME")
@@ -115,5 +125,46 @@ fn get_chain_provider() -> Result<Box<dyn Blockchain>> {
             Ok(Box::new(client))
         }
         Err(e) => Err(anyhow::anyhow!("Couldn't connect to bitcoin core: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Each test uses its own variable name because tests run in parallel and
+    // share the process environment.
+
+    #[test]
+    fn env_var_returns_set_values() {
+        env::set_var("CASTOR_TEST_ENV_SET", "8433");
+        assert_eq!(env_var("CASTOR_TEST_ENV_SET").as_deref(), Some("8433"));
+    }
+
+    #[test]
+    fn env_var_keeps_surrounding_whitespace_of_set_values() {
+        env::set_var("CASTOR_TEST_ENV_PADDED", " secret ");
+        assert_eq!(
+            env_var("CASTOR_TEST_ENV_PADDED").as_deref(),
+            Some(" secret ")
+        );
+    }
+
+    #[test]
+    fn env_var_treats_empty_as_unset() {
+        env::set_var("CASTOR_TEST_ENV_EMPTY", "");
+        assert_eq!(env_var("CASTOR_TEST_ENV_EMPTY"), None);
+    }
+
+    #[test]
+    fn env_var_treats_whitespace_as_unset() {
+        env::set_var("CASTOR_TEST_ENV_BLANK", "  \t");
+        assert_eq!(env_var("CASTOR_TEST_ENV_BLANK"), None);
+    }
+
+    #[test]
+    fn env_var_treats_missing_as_unset() {
+        env::remove_var("CASTOR_TEST_ENV_MISSING");
+        assert_eq!(env_var("CASTOR_TEST_ENV_MISSING"), None);
     }
 }
