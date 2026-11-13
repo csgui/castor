@@ -1,7 +1,9 @@
 use std::env;
 use std::fs;
 use std::fs::File;
+use std::io;
 use std::io::BufReader;
+use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -186,14 +188,12 @@ fn start_p2p(
     block_notifier: std::sync::mpsc::Receiver<bitcoin::BlockHash>,
 ) -> anyhow::Result<()> {
     info!("Starting P2PV2-only BIP 183 proof server");
+    let p2p_host = env::var("P2P_HOST").unwrap_or_else(|_| "0.0.0.0".into());
     let p2p_port = env::var("P2P_PORT").unwrap_or_else(|_| "8333".into());
-    let p2p_address = format!(
-        "{}:{}",
-        env::var("P2P_HOST").unwrap_or_else(|_| "0.0.0.0".into()),
-        p2p_port
-    )
-    .parse()
-    .context("invalid P2P listen address")?;
+    let p2p_listen = format!("{p2p_host}:{p2p_port}");
+    let p2p_address: SocketAddr = p2p_listen.parse().with_context(|| {
+        format!("invalid P2P listen address {p2p_listen:?}; check P2P_HOST and P2P_PORT")
+    })?;
     let worker_context = WorkerContext {
         chainview: view,
         magic: network.magic(),
@@ -202,8 +202,26 @@ fn start_p2p(
         header_index,
         header_source,
     };
-    node::Node::run(p2p_address, worker_context, block_notifier)?;
-    Ok(())
+    node::Node::run(p2p_address, worker_context, block_notifier)
+        .map_err(|error| p2p_start_error(p2p_address, error))
+}
+
+/// Adds the listen address, and a hint for the common port clash with
+/// Bitcoin Core, to P2P startup errors.
+fn p2p_start_error(address: SocketAddr, error: node::NodeError) -> anyhow::Error {
+    let message = match &error {
+        node::NodeError::Bind(bind_error) if bind_error.kind() == io::ErrorKind::AddrInUse => {
+            format!(
+                "cannot listen for P2P connections on {address}: the port is already in use. \
+                 Bitcoin Core listens on port 8333 by default; set P2P_PORT to a free port"
+            )
+        }
+        node::NodeError::Bind(_) => {
+            format!("cannot listen for P2P connections on {address}; check P2P_HOST and P2P_PORT")
+        }
+        _ => format!("cannot start the P2P server on {address}"),
+    };
+    anyhow::Error::new(error).context(message)
 }
 
 fn open_index(path: String) -> anyhow::Result<BlocksIndex> {
@@ -217,4 +235,40 @@ fn open_index(path: String) -> anyhow::Result<BlocksIndex> {
             segment_size: None,
         })?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn address() -> SocketAddr {
+        "0.0.0.0:8333".parse().unwrap()
+    }
+
+    #[test]
+    fn address_in_use_suggests_p2p_port() {
+        let error = node::NodeError::Bind(io::Error::from(io::ErrorKind::AddrInUse));
+        let message = p2p_start_error(address(), error).to_string();
+        assert!(message.contains("0.0.0.0:8333"), "{message}");
+        assert!(message.contains("already in use"), "{message}");
+        assert!(message.contains("P2P_PORT"), "{message}");
+    }
+
+    #[test]
+    fn other_bind_errors_name_the_address() {
+        let error = node::NodeError::Bind(io::Error::from(io::ErrorKind::PermissionDenied));
+        let error = p2p_start_error(address(), error);
+        let message = error.to_string();
+        assert!(message.contains("0.0.0.0:8333"), "{message}");
+        assert!(!message.contains("already in use"), "{message}");
+        assert!(format!("{error:#}").contains("failed to bind P2P listener"));
+    }
+
+    #[test]
+    fn non_bind_errors_keep_the_source() {
+        let error = node::NodeError::Spawn(io::Error::other("no threads"));
+        let error = p2p_start_error(address(), error);
+        assert!(error.to_string().contains("0.0.0.0:8333"));
+        assert!(format!("{error:#}").contains("failed to spawn P2P thread"));
+    }
 }
