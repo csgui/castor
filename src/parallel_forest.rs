@@ -944,9 +944,19 @@ pub struct KernelBlockSource {
 }
 
 impl KernelBlockSource {
-    pub fn open(network: Network) -> Result<Self> {
-        let home = env::var("HOME").context("HOME is required to locate Bitcoin Core data")?;
-        let bitcoin_data_dir = PathBuf::from(home).join(".bitcoin");
+    /// Opens Bitcoin Core's chainstate under `bitcoin_data_dir`, or under
+    /// `~/.bitcoin` when it is `None`. Like Core's `-datadir`, the network
+    /// subdirectory is appended.
+    pub fn open(network: Network, bitcoin_data_dir: Option<&Path>) -> Result<Self> {
+        let bitcoin_data_dir = match bitcoin_data_dir {
+            Some(dir) => dir.to_owned(),
+            None => {
+                let home = env::var("HOME").context(
+                    "HOME is required to locate Bitcoin Core data; set --bitcoin-datadir",
+                )?;
+                PathBuf::from(home).join(".bitcoin")
+            }
+        };
         let network_data_dir = match network {
             Network::Bitcoin => bitcoin_data_dir,
             Network::Testnet => bitcoin_data_dir.join("testnet3"),
@@ -958,7 +968,8 @@ impl KernelBlockSource {
         let blocks_dir = network_data_dir.join("blocks");
         if !blocks_dir.is_dir() {
             bail!(
-                "Bitcoin Core blocks directory {} does not exist",
+                "Bitcoin Core blocks directory {} does not exist; set --bitcoin-datadir or \
+                 BITCOIN_CORE_DATADIR to Core's data directory",
                 blocks_dir.display()
             );
         }
@@ -980,8 +991,12 @@ impl KernelBlockSource {
         let blocks_dir = blocks_dir
             .to_str()
             .context("Bitcoin Core blocks directory is not valid UTF-8")?;
-        let manager = ChainstateManager::new(&context, data_dir, blocks_dir)
-            .context("failed to open Bitcoin Core through the kernel chainstate manager")?;
+        let open_error = format!(
+            "failed to open Bitcoin Core's chainstate in {data_dir}. The bridge needs \
+             write access to this directory, and Bitcoin Core may need to be stopped while \
+             it runs"
+        );
+        let manager = ChainstateManager::new(&context, data_dir, blocks_dir).context(open_error)?;
         let chain = manager.active_chain();
         let tip_height =
             u32::try_from(chain.height()).context("kernel chain tip is outside u32 range")?;

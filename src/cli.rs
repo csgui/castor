@@ -32,6 +32,12 @@ pub struct CliArgs {
     #[clap(long, value_name = "HEADER_INDEX_DIR")]
     pub header_index_path: Option<std::path::PathBuf>,
 
+    /// Bitcoin Core data directory read by `--build-forest`, like Core's
+    /// `-datadir`; the network subdirectory (e.g. `signet/`) is added
+    /// automatically. Defaults to `$BITCOIN_CORE_DATADIR`, then `~/.bitcoin`.
+    #[clap(long, value_name = "DIR", requires = "build_forest")]
+    pub bitcoin_datadir: Option<std::path::PathBuf>,
+
     /// Number of concurrent block-fetching leaf workers.
     #[clap(long, requires = "build_forest")]
     pub forest_leaf_workers: Option<usize>,

@@ -70,7 +70,11 @@ pub fn run_bridge() -> anyhow::Result<()> {
         config.minimum_leaf_capacity = cli_options.forest_leaf_capacity;
         config.lock_pages = !cli_options.forest_no_mlock;
 
-        let source = KernelBlockSource::open(cli_options.network)?;
+        let bitcoin_datadir = cli_options
+            .bitcoin_datadir
+            .clone()
+            .or_else(|| env_var("BITCOIN_CORE_DATADIR").map(Into::into));
+        let source = KernelBlockSource::open(cli_options.network, bitcoin_datadir.as_deref())?;
         let summary = build_parallel_forest(&source, &hints, config)?;
         info!(
             "Built flat forest: leaves={} nodes={} leaf_map_entries={} bytes={} roots={} pages_locked={}",

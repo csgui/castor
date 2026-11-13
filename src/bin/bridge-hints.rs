@@ -66,6 +66,12 @@ struct Cli {
     #[arg(long, default_value_t = 10_000)]
     progress_every: u32,
 
+    /// Bitcoin Core data directory, like Core's `-datadir`; the network
+    /// subdirectory (e.g. `signet/`) is added automatically. Defaults to
+    /// `$BITCOIN_CORE_DATADIR`, then `~/.bitcoin`.
+    #[arg(long, value_name = "DIR")]
+    bitcoin_datadir: Option<PathBuf>,
+
     /// Atomically replace an existing destination file.
     #[arg(long)]
     force: bool,
@@ -144,13 +150,13 @@ fn main() -> Result<()> {
 
 impl KernelChain {
     fn open(cli: &Cli) -> Result<Self> {
-        let home = env::var("HOME").context("HOME is required to locate Bitcoin Core data")?;
-        let bitcoin_data_dir = PathBuf::from(home).join(".bitcoin");
+        let bitcoin_data_dir = bitcoin_data_dir(cli)?;
         let network_data_dir = network_data_dir(&bitcoin_data_dir, cli.network);
         let blocks_dir = network_data_dir.join("blocks");
         if !blocks_dir.is_dir() {
             bail!(
-                "Bitcoin Core blocks directory {} does not exist",
+                "Bitcoin Core blocks directory {} does not exist; set --bitcoin-datadir or \
+                 BITCOIN_CORE_DATADIR to Core's data directory",
                 blocks_dir.display()
             );
         }
@@ -164,8 +170,12 @@ impl KernelChain {
         let blocks_dir = blocks_dir
             .to_str()
             .context("Bitcoin Core blocks directory is not valid UTF-8")?;
-        let manager = ChainstateManager::new(&context, data_dir, blocks_dir)
-            .context("failed to open Bitcoin Core through the kernel chainstate manager")?;
+        let open_error = format!(
+            "failed to open Bitcoin Core's chainstate in {data_dir}. bridge-hints needs \
+             write access to this directory, and Bitcoin Core may need to be stopped while \
+             it runs"
+        );
+        let manager = ChainstateManager::new(&context, data_dir, blocks_dir).context(open_error)?;
         let chain = manager.active_chain();
         let tip_height =
             u32::try_from(chain.height()).context("kernel chain tip is outside u32 range")?;
@@ -208,6 +218,20 @@ fn kernel_chain_type(network: Network) -> Result<ChainType> {
         Network::Regtest => Ok(ChainType::Regtest),
         _ => bail!("unsupported Bitcoin network {network}"),
     }
+}
+
+/// Resolves Core's base data directory: `--bitcoin-datadir`, then a non-empty
+/// `$BITCOIN_CORE_DATADIR`, then `~/.bitcoin`.
+fn bitcoin_data_dir(cli: &Cli) -> Result<PathBuf> {
+    if let Some(dir) = &cli.bitcoin_datadir {
+        return Ok(dir.clone());
+    }
+    if let Some(dir) = env::var_os("BITCOIN_CORE_DATADIR").filter(|dir| !dir.is_empty()) {
+        return Ok(dir.into());
+    }
+    let home = env::var("HOME")
+        .context("HOME is required to locate Bitcoin Core data; set --bitcoin-datadir")?;
+    Ok(PathBuf::from(home).join(".bitcoin"))
 }
 
 fn network_data_dir(bitcoin_data_dir: &Path, network: Network) -> PathBuf {
